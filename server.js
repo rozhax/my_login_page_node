@@ -16,11 +16,15 @@ const express = require('express');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
-const env = require('dotenv');
-env.config();
+const Database = require('better-sqlite3');
+const SqliteStore = require('better-sqlite3-session-store')(session);
+const sessionDb = new Database(path.join(__dirname, 'db', 'sessions.db'));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// to get the .env file 
+require('dotenv').config();
 
 // ---- View engine (EJS replaces inline PHP templating) ----
 app.set('view engine', 'ejs');
@@ -31,7 +35,14 @@ app.use(express.urlencoded({ extended: true })); // parse HTML form posts
 app.use(express.static(path.join(__dirname, 'public'))); // serves style.css, script.js
 
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'change-this-secret-in-production',
+   store: new SqliteStore({
+       client: sessionDb,
+       expired: {
+         clear: true,
+         intervalMs: 1000 * 60 * 60 * 2 // clean up expired sessions every 2 hours
+       }
+     }),
+  secret: process.env.SESSION_SECRET || 'cd431c6709305d2d2d17951d0800b34fe728c40a322af6b0c1984385ffc68d0f',
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -40,17 +51,14 @@ app.use(session({
   }
 }));
 
-// Small helper to pull a one-time "flash" value out of the session,
-// same idea as PHP's $_SESSION['login_error'] + session_unset().
+
 function flash(req, key) {
   const val = req.session[key];
   delete req.session[key];
   return val || '';
 }
 
-// ---------------------------------------------------------------------
-// GET /  -> replaces display.php
-// ---------------------------------------------------------------------
+
 app.get('/', (req, res) => {
   res.render('display', {
     loginError: flash(req, 'login_error'),
@@ -59,9 +67,41 @@ app.get('/', (req, res) => {
   });
 });
 
+
 // ---------------------------------------------------------------------
-// POST /register -> replaces the register half of login_register.php
+// GET /logout 
 // ---------------------------------------------------------------------
+app.get('/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.redirect('/');
+  });
+});
+
+// ---- Auth guard, same idea as the isset($_SESSION['email']) check ----
+function requireLogin(role) {
+  return (req, res, next) => {
+    if (!req.session.userId) return res.redirect('/');
+    if (role && req.session.role !== role) return res.redirect('/');
+    next();
+  };
+}
+
+// ---------------------------------------------------------------------
+// GET /user -> replaces user_page.php
+// ---------------------------------------------------------------------
+app.get('/user', requireLogin('user'), (req, res) => {
+  res.render('user_page', { name: req.session.name });
+});
+
+// ---------------------------------------------------------------------
+// GET /admin -> replaces the missing admin_page.php that login_register.php
+// used to redirect to
+// ---------------------------------------------------------------------
+app.get('/admin', requireLogin('admin'), (req, res) => {
+  res.render('admin_page', { name: req.session.name });
+});
+
+
 app.post('/register', async (req, res) => {
   const { name, email, password, role } = req.body;
 
@@ -97,6 +137,7 @@ app.post('/register', async (req, res) => {
   }
 });
 
+
 // ---------------------------------------------------------------------
 // POST /login -> replaces the login half of login_register.php
 // ---------------------------------------------------------------------
@@ -126,38 +167,7 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------------------
-// GET /logout -> replaces logout.php
-// ---------------------------------------------------------------------
-app.get('/logout', (req, res) => {
-  req.session.destroy(() => {
-    res.redirect('/');
-  });
-});
 
-// ---- Auth guard, same idea as the isset($_SESSION['email']) check ----
-function requireLogin(role) {
-  return (req, res, next) => {
-    if (!req.session.userId) return res.redirect('/');
-    if (role && req.session.role !== role) return res.redirect('/');
-    next();
-  };
-}
-
-// ---------------------------------------------------------------------
-// GET /user -> replaces user_page.php
-// ---------------------------------------------------------------------
-app.get('/user', requireLogin('user'), (req, res) => {
-  res.render('user_page', { name: req.session.name });
-});
-
-// ---------------------------------------------------------------------
-// GET /admin -> replaces the missing admin_page.php that login_register.php
-// used to redirect to
-// ---------------------------------------------------------------------
-app.get('/admin', requireLogin('admin'), (req, res) => {
-  res.render('admin_page', { name: req.session.name });
-});
 
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
